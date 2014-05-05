@@ -46,10 +46,10 @@
 #include <mach/irqs.h>
 #include <mach/system.h>
 #include <mach/hardware.h>
-#include <mach/sys_config.h>
+#include <plat/sys_config.h>
 
 #include <mach/gpio.h>
-#include <linux/init-input.h>
+#include "init-input.h"
 
 #include "gslX680.h"
 #include "gsl1680.h"        //resolution:1024*600
@@ -58,6 +58,7 @@
 //gsl1680_2.h and gsl1680.h difference lies in the x axis, y axis and interrupt the parameters of the differences
 #include "gsl2680.h"        //resolution:1024*768
 #include "gsl3680.h"        //resolution:2048*1563
+#include "gslX680_pcd.h"    // for pcduino
 
 
 struct gslX680_fw_array {
@@ -65,6 +66,7 @@ struct gslX680_fw_array {
 	unsigned int size;
 	const struct fw_data *fw;
 } gslx680_fw_grp[] = {
+	{"gsl1680_pcd", ARRAY_SIZE(GSL1680_FW_PCD),  GSL1680_FW_PCD},
 	{"gsl1680",     ARRAY_SIZE(GSL1680_FW),   GSL1680_FW},
 	{"gsl1680_1",   ARRAY_SIZE(GSL1680_FW_1), GSL1680_FW_1},
 	{"gsl1680_2",   ARRAY_SIZE(GSL1680_FW_2), GSL1680_FW_2},
@@ -89,6 +91,7 @@ static u32 gslX680_debug_mask = 1;
 #define GSL_PAGE_REG		0xf0
 
 #define PRESS_MAX    			255
+
 #define MAX_FINGERS 		10//5 //最大手指个数
 #define MAX_CONTACTS 		10
 #define DMA_TRANS_LEN		0x20
@@ -178,9 +181,6 @@ struct gsl_ts {
 
 };
 
-static struct ctp_config_info config_info = {
-	.input_type = CTP_TYPE,
-};
 
 static u32 debug_mask = 0;
 #define dprintk(level_mask,fmt,arg...)    if(unlikely(debug_mask & level_mask)) \
@@ -193,13 +193,29 @@ static u16 x_old[MAX_CONTACTS+1] = {0};
 static u16 y_old[MAX_CONTACTS+1] = {0};
 static u16 x_new = 0;
 static u16 y_new = 0;
+static u32 gpio_addr = 0xf1c20800;
+#define PIO_INT_STAT_OFFSET 0x214
+static user_gpio_set_t gpio_int_info[1];
+#define CTP_IRQ_NO			(gpio_int_info[0].port_num)
+static int gpio_int_hdle = 0;
+typedef enum {
+     PIO_INT_CFG0_OFFSET = 0x200,
+     PIO_INT_CFG1_OFFSET = 0x204,
+     PIO_INT_CFG2_OFFSET = 0x208,
+     PIO_INT_CFG3_OFFSET = 0x20c,
+} int_cfg_offset;
+#define PIO_INT_CTRL_OFFSET          (0x210)
+
+static int	int_cfg_addr[]={PIO_INT_CFG0_OFFSET,PIO_INT_CFG1_OFFSET,
+			PIO_INT_CFG2_OFFSET, PIO_INT_CFG3_OFFSET};
+#define SINGLE_POINT // for ubuntu
+
 
 
 ///////////////////////////////////////////////
 //specific tp related macro: need be configured for specific tp
 
-#define CTP_IRQ_NUMBER                  (config_info.int_number)
-#define CTP_IRQ_MODE			(TRIG_EDGE_NEGATIVE)
+#define CTP_IRQ_MODE			(IRQF_TRIGGER_RISING)
 #define CTP_NAME			GSLX680_I2C_NAME
 #define SCREEN_MAX_X		        (screen_max_x)
 #define SCREEN_MAX_Y		        (screen_max_y)
@@ -210,11 +226,11 @@ static int screen_max_y = 0;
 static int revert_x_flag = 0;
 static int revert_y_flag = 0;
 static int exchange_x_y_flag = 0;
-static u32 int_handle = 0;
-static char* fwname;
+static char* fwname = "gsl1680_pcd";
 static int fw_index = -1;
 
 static __u32 twi_id = 0;
+
 
 /* Addresses to scan */
 static const unsigned short normal_i2c[2] = {0x40,I2C_CLIENT_END};
@@ -231,25 +247,17 @@ struct gsl_ts *ts_init;
 static int ctp_detect(struct i2c_client *client, struct i2c_board_info *info)
 {
 	struct i2c_adapter *adapter = client->adapter;
-	int ret;
 
         if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
                 return -ENODEV;
 
 	if(twi_id == adapter->nr){
                 dprintk(DEBUG_INIT,"%s: addr= %x\n",__func__,client->addr);
-                ret = i2c_test(client);
-                if(!ret){
-        		printk("%s:I2C connection might be something wrong \n",__func__);
-        		return -ENODEV;
-		}else{
 			strlcpy(info->type, CTP_NAME, I2C_NAME_SIZE);
-			return 0;
-	        }
-
 	}else{
 		return -ENODEV;
 	}
+	return 0;
 }
 
 
@@ -288,20 +296,16 @@ static DEVICE_ATTR(debug_enable, 0664, gslX680_debug_enable_show, gslX680_debug_
 
 static int gslX680_chip_init(void)
 {
-         ctp_wakeup(config_info.wakeup_number, 1, 0);
-         msleep(20);
          return 0;
 }
 
 static int gslX680_shutdown_low(void)
 {
-        ctp_wakeup(config_info.wakeup_number, 0, 0);
 	return 0;
 }
 
 static int gslX680_shutdown_high(void)
 {
-        ctp_wakeup(config_info.wakeup_number, 1, 0);
 	return 0;
 }
 
@@ -422,10 +426,12 @@ static int gsl_ts_read(struct i2c_client *client, u8 addr, u8 *pdata, unsigned i
 static void gls_ts_irq_onoff(u32 onoff)
 {
 #ifndef GSL_TIMER
+/*
 	if (onoff)
 		sw_gpio_eint_set_enable(CTP_IRQ_NUMBER,1);
 	else
 		sw_gpio_eint_set_enable(CTP_IRQ_NUMBER,0);
+*/
 #endif
 }
 
@@ -582,7 +588,7 @@ static void report_data(struct gsl_ts *ts, u16 x, u16 y, u8 pressure, u8 id)
                 y = SCREEN_MAX_Y - y;
         }        
 
-	dprintk(DEBUG_X_Y_INFO,"report data :id=%d,x=%d,y=%d\n",id,x,y);
+	dprintk(DEBUG_X_Y_INFO,"report data :id=%d,x=%d,y=%d\n",id,x*SCREEN_MAX_X/800,y*SCREEN_MAX_Y/480);
 
 	if(x>=SCREEN_MAX_X||y>=SCREEN_MAX_Y)
 	{
@@ -600,12 +606,20 @@ static void report_data(struct gsl_ts *ts, u16 x, u16 y, u8 pressure, u8 id)
 	input_report_abs(ts->input, ABS_MT_POSITION_Y, y);
 	input_report_abs(ts->input, ABS_MT_WIDTH_MAJOR, 1);
 #else
+
+#ifndef SINGLE_POINT
 	input_report_abs(ts->input, ABS_MT_TRACKING_ID, id);
 	input_report_abs(ts->input, ABS_MT_TOUCH_MAJOR, pressure);
 	input_report_abs(ts->input, ABS_MT_POSITION_X,x);
 	input_report_abs(ts->input, ABS_MT_POSITION_Y, y);
 	input_report_abs(ts->input, ABS_MT_WIDTH_MAJOR, 1);
 	input_mt_sync(ts->input);
+#else
+	input_report_key(ts->input, BTN_TOUCH,1);
+	input_report_abs(ts->input, ABS_X, x*SCREEN_MAX_X/800);
+	input_report_abs(ts->input, ABS_Y, y*SCREEN_MAX_Y/480);
+	input_sync(ts->input);
+#endif
 #endif
 }
 
@@ -616,6 +630,15 @@ static void process_gslX680_data(struct gsl_ts *ts)
 	int i = 0;
 
 	touches = ts->touch_data[ts->dd->touch_index];
+#ifdef SINGLE_POINT
+	if ( touches == 0 )
+	{
+		dprintk(DEBUG_X_Y_INFO, "up ?\n");
+		input_report_key(ts->input, BTN_TOUCH, 0);
+		input_sync(ts->input);
+		return;
+	}
+#endif
 	for(i=1;i<=MAX_CONTACTS;i++){
 		if(touches == 0)
 			id_sign[i] = 0;
@@ -645,6 +668,7 @@ static void process_gslX680_data(struct gsl_ts *ts)
 		}
 		id_state_old_flag[i] = id_state_flag[i];
 	}
+#ifndef SINGLE_POINT
 #ifndef REPORT_DATA_ANDROID_4_0
 	if(0 == touches){
 	        input_report_abs(ts->input, ABS_MT_TOUCH_MAJOR, 0);
@@ -658,7 +682,8 @@ static void process_gslX680_data(struct gsl_ts *ts)
 	#endif
 	}
 #endif
-	input_sync(ts->input);
+input_sync(ts->input);	
+#endif
 	ts->prev_touches = touches;
 }
 
@@ -688,7 +713,7 @@ static void gsl_ts_xy_worker(struct work_struct *work)
 		dev_err(&ts->client->dev, "read 0xbc failed\n");
 		goto schedule;
 	}
-	dprintk(DEBUG_X_Y_INFO,"reg %x : %x %x %x %x\n",0xbc, read_buf[3], read_buf[2], read_buf[1], read_buf[0]);
+	dprintk(DEBUG_X_Y_INFO,"reg %x : %x %x %x %x\n",0xbc, read_buf[3], read_buf[2], read_buf[1], read_buf[0]);	
 	if (read_buf[3] == 0 && read_buf[2] == 0 && read_buf[1] == 0 && read_buf[0] == 0){
 		process_gslX680_data(ts);
 	}
@@ -701,16 +726,28 @@ schedule:
 	gls_ts_irq_onoff(1);
 }
 
+#ifdef GSL_TIMER
 static u32 gsl_ts_irq(struct gsl_ts *ts)
 {
-	dprintk(DEBUG_INT_INFO,"==========GSLX680 Interrupt============\n");
+        dprintk(DEBUG_INT_INFO,"==========GSLX680 Interrupt============\n");
         dprintk(DEBUG_INT_INFO,"Enter work\n");
-	queue_work(ts->wq, &ts->work);
-#ifdef GSL_TIMER
-	mod_timer(&ts->gsl_timer, jiffies + msecs_to_jiffies(30));
-#endif
-	return 0;
+        queue_work(ts->wq, &ts->work);
+        mod_timer(&ts->gsl_timer, jiffies + msecs_to_jiffies(30));
+        return 0;
 }
+#else
+static irqreturn_t gsl_ts_irq(int irq, void *dev_id)
+{
+	struct gsl_ts *ts = (struct gsl_ts *)dev_id;
+    u32 reg_val = readl(gpio_addr + PIO_INT_STAT_OFFSET);
+	if (reg_val&(1<<(CTP_IRQ_NO))) {
+		writel(reg_val&(1<<(CTP_IRQ_NO)),gpio_addr + PIO_INT_STAT_OFFSET);
+		queue_work(ts->wq, &ts->work);
+		return IRQ_HANDLED;
+	}
+	return IRQ_NONE;
+}
+#endif
 
 static int gsl_ts_init_ts(struct i2c_client *client, struct gsl_ts *ts)
 {
@@ -740,9 +777,15 @@ static int gsl_ts_init_ts(struct i2c_client *client, struct gsl_ts *ts)
 	}
 
 	ts->input = input_device;
-	input_device->name = GSLX680_I2C_NAME;
+	input_device->name = GSLX680_I2C_NAME;	
 	input_device->id.bustype = BUS_I2C;
 	input_device->dev.parent = &client->dev;
+#if 0
+	input_device->phys = "gslX680-ts/input1";
+	input_device->id.vendor = 0xDEAD;
+	input_device->id.product = 0xBEEF;
+	input_device->id.version = 0x1105;
+#endif	
 	input_set_drvdata(input_device, ts);
 
 #ifdef REPORT_DATA_ANDROID_4_0
@@ -765,15 +808,31 @@ static int gsl_ts_init_ts(struct i2c_client *client, struct gsl_ts *ts)
 		set_bit(i, input_device->keybit);
 #endif
 
+
+#ifndef SINGLE_POINT
 	set_bit(ABS_MT_POSITION_X, input_device->absbit);
 	set_bit(ABS_MT_POSITION_Y, input_device->absbit);
 	set_bit(ABS_MT_TOUCH_MAJOR, input_device->absbit);
 	set_bit(ABS_MT_WIDTH_MAJOR, input_device->absbit);
-
 	input_set_abs_params(input_device,ABS_MT_POSITION_X, 0, SCREEN_MAX_X, 0, 0);
 	input_set_abs_params(input_device,ABS_MT_POSITION_Y, 0, SCREEN_MAX_Y, 0, 0);
 	input_set_abs_params(input_device,ABS_MT_TOUCH_MAJOR, 0, PRESS_MAX, 0, 0);
 	input_set_abs_params(input_device,ABS_MT_WIDTH_MAJOR, 0, 200, 0, 0);
+#else
+	set_bit(BTN_TOUCH, input_device->keybit);
+	set_bit(EV_ABS, input_device->evbit); 
+	set_bit(EV_KEY, input_device->evbit);	
+	set_bit(ABS_X, input_device->absbit); 
+	set_bit(ABS_Y, input_device->absbit); 
+		
+	input_set_abs_params(input_device, ABS_X, 0, SCREEN_MAX_X, 0, 0); 
+	input_set_abs_params(input_device, ABS_Y, 0, SCREEN_MAX_Y, 0, 0); 
+	input_set_abs_params(input_device, ABS_PRESSURE, 0, PRESS_MAX, 0 , 0); 
+
+	input_device->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+	input_device->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+
+#endif
 
 	ts->wq = create_singlethread_workqueue("kworkqueue_ts");
 	if (!ts->wq) {
@@ -890,19 +949,91 @@ static void gsl_ts_late_resume(struct early_suspend *h)
 }
 #endif
 
+#ifndef GSL_TIMER
+
+/**
+ * ctp_clear_penirq - clear int pending
+ *
+ */
+static void ctp_clear_penirq(void)
+{
+	int reg_val;
+	reg_val = readl(gpio_addr + PIO_INT_STAT_OFFSET);
+	if((reg_val = (reg_val&(1<<(CTP_IRQ_NO))))){
+		writel(reg_val,gpio_addr + PIO_INT_STAT_OFFSET);
+	}
+}
+
+
+/**
+ * ctp_set_irq_mode - according sysconfig's subkey "ctp_int_port" to config int port.
+ *
+ * return value:
+ *              0:      success;
+ *              others: fail;
+ */
+static int ctp_set_irq_mode(char *major_key , char *subkey, int int_mode)
+{
+	int ret = 0;
+	__u32 reg_num = 0;
+	__u32 reg_addr = 0;
+	__u32 reg_val = 0;
+	//config gpio to int mode
+	pr_info("%s: config gpio to int mode. \n", __func__);
+	if(gpio_int_hdle){
+		gpio_release(gpio_int_hdle, 2);
+	}
+	gpio_int_hdle = gpio_request_ex(major_key, subkey);
+	if(!gpio_int_hdle){
+		pr_info("request tp_int_port failed. \n");
+		ret = -1;
+		goto request_tp_int_port_failed;
+	}
+	gpio_get_one_pin_status(gpio_int_hdle, gpio_int_info, subkey, 1);
+	pr_info("%s, %d: gpio_int_info, port = %d, port_num = %d. \n", __func__, __LINE__, \
+		gpio_int_info[0].port, gpio_int_info[0].port_num);
+
+	reg_num = (gpio_int_info[0].port_num)%8;
+	reg_addr = (gpio_int_info[0].port_num)/8;
+	reg_val = readl(gpio_addr + int_cfg_addr[reg_addr]);
+	reg_val &= (~(7 << (reg_num * 4)));
+	reg_val |= (int_mode << (reg_num * 4));
+	writel(reg_val,gpio_addr+int_cfg_addr[reg_addr]);
+
+	ctp_clear_penirq();
+
+	reg_val = readl(gpio_addr+PIO_INT_CTRL_OFFSET);
+	reg_val |= (1 << (gpio_int_info[0].port_num));
+	writel(reg_val,gpio_addr+PIO_INT_CTRL_OFFSET);
+
+
+request_tp_int_port_failed:
+	return ret;
+}
+
+#endif
+
 static void glsX680_init_events (struct work_struct *work)
 {
+	int err;
+
 	gslX680_chip_init();
 	init_chip(glsX680_i2c);
 	check_mem_data(glsX680_i2c);
 
 #ifndef GSL_TIMER
-	int_handle = sw_gpio_irq_request(CTP_IRQ_NUMBER,CTP_IRQ_MODE,(peint_handle)gsl_ts_irq,ts_init);
-	if (!int_handle) {
-		printk( "gsl_probe: request irq failed\n");
-	}
-	ctp_set_int_port_rate(config_info.int_number, 1);
-	ctp_set_int_port_deb(config_info.int_number, 0x07);
+err = ctp_set_irq_mode("ctp_para", "ctp_int_port", CTP_IRQ_MODE);
+if(0 != err){
+	printk("%s:ctp_ops.set_irq_mode err. \n", __func__);
+	return;
+}
+
+err =  request_irq(SW_INT_IRQNO_PIO, gsl_ts_irq, IRQF_TRIGGER_RISING | IRQF_SHARED, GSLX680_I2C_NAME, ts_init);
+if (err < 0) {
+	printk( "goodix_probe: request irq failed\n");
+	return;
+}
+
 #else
 	printk( "add gsl_timer\n");
 	init_timer(&ts_init->gsl_timer);
@@ -1001,7 +1132,11 @@ static int __devexit gsl_ts_remove(struct i2c_client *client)
 	cancel_work_sync(&glsX680_init_work);
 	cancel_work_sync(&glsX680_resume_work);
 #ifndef GSL_TIMER
-	sw_gpio_irq_free(int_handle);
+	free_irq(SW_INT_IRQNO_PIO, ts);
+
+	if(gpio_int_hdle){
+		gpio_release(gpio_int_hdle, 2);
+	}
 #else
 	del_timer(&ts->gsl_timer);
 #endif
@@ -1034,57 +1169,119 @@ static struct i2c_driver gsl_ts_driver = {
 	.address_list	= normal_i2c,
 	.suspend  =  gsl_ts_suspend,
 	.resume   =  gsl_ts_resume,
+	.detect  = NULL,
 };
 static int ctp_get_system_config(void)
 {
-        char *name[] = {"ctp_para", "ctp_name"};
-        
-        get_str_para(name, &fwname, 1);
 	dprintk(DEBUG_INIT,"%s:fwname:%s\n",__func__,fwname);
         fw_index = gsl_find_fw_idx(fwname);
         if (fw_index == -1) {
         	printk("gslx680: no matched TP firmware(%s)!\n", fwname);
         	return 0;
         }
-
-        twi_id = config_info.twi_id;
-        screen_max_x = config_info.screen_max_x;
-        screen_max_y = config_info.screen_max_y;
-        revert_x_flag = config_info.revert_x_flag;
-        revert_y_flag = config_info.revert_y_flag;
-        exchange_x_y_flag = config_info.exchange_x_y_flag;
         if((twi_id == 0) || (screen_max_x == 0) || (screen_max_y == 0)){
                 printk("%s:read config error!\n",__func__);
                 return 0;
         }
         return 1;
 }
+
+
+/**
+ * ctp_fetch_sysconfig_para - get config info from sysconfig.fex file.
+ * return value:
+ *                    = 0; success;
+ *                    < 0; err
+ */
+static int ctp_fetch_sysconfig_para(void)
+{
+	int ret = -1;
+	int ctp_used = -1;
+	char name[I2C_NAME_SIZE];
+	script_parser_value_type_t type = SCRIPT_PARSER_VALUE_TYPE_STRING;
+
+	printk("%s. \n", __func__);
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch("ctp_para", "ctp_used", &ctp_used, 1)){
+		printk("%s: script_parser_fetch err. %d\n", __func__, __LINE__);
+		goto script_parser_fetch_err;
+	}
+	if(1 != ctp_used){
+		printk("%s: ctp_unused. \n",  __func__);
+		//ret = 1;
+		return ret;
+	}
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch_ex("ctp_para", "ctp_twi_name", (int *)(&name), &type, sizeof(name)/sizeof(int))){
+		printk("%s: script_parser_fetch err. %d\n", __func__, __LINE__);
+		goto script_parser_fetch_err;
+	}
+	if(strcmp(CTP_NAME, name)){
+		printk("%s: name %s does not match CTP_NAME. \n", __func__, name);
+		printk(CTP_NAME);
+		//ret = 1;
+		return ret;
+	}
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch("ctp_para", "ctp_twi_id", &twi_id, sizeof(twi_id)/sizeof(__u32))){
+		printk("%s: script_parser_fetch err. \n", name);
+		goto script_parser_fetch_err;
+	}
+	printk("%s: ctp_twi_id is %d. \n", __func__, twi_id);
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch("ctp_para", "ctp_screen_max_x", &screen_max_x, 1)){
+		printk("%s: script_parser_fetch err. %d\n", __func__, __LINE__);
+		goto script_parser_fetch_err;
+	}
+	printk("%s: screen_max_x = %d. \n", __func__, screen_max_x);
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch("ctp_para", "ctp_screen_max_y", &screen_max_y, 1)){
+		printk("%s: script_parser_fetch err. %d\n", __func__, __LINE__);
+		goto script_parser_fetch_err;
+	}
+	printk("%s: screen_max_y = %d. \n", __func__, screen_max_y);
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch("ctp_para", "ctp_revert_x_flag", &revert_x_flag, 1)){
+		printk("%s: script_parser_fetch err. %d\n", __func__, __LINE__);
+		goto script_parser_fetch_err;
+	}
+	printk("%s: revert_x_flag = %d. \n", __func__, revert_x_flag);
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch("ctp_para", "ctp_revert_y_flag", &revert_y_flag, 1)){
+		printk("%s: script_parser_fetch err. %d\n", __func__, __LINE__);
+		goto script_parser_fetch_err;
+	}
+	printk("%s: revert_y_flag = %d. \n", __func__, revert_y_flag);
+
+	if(SCRIPT_PARSER_OK != script_parser_fetch("ctp_para", "ctp_exchange_x_y_flag", &exchange_x_y_flag, 1)){
+		printk("%s: script_parser_fetch err. %d\n", __func__, __LINE__);
+		goto script_parser_fetch_err;
+	}
+	exchange_x_y_flag = 1;
+	printk("%s: exchange_x_y_flag = %d. \n", __func__, exchange_x_y_flag);
+
+	return 0;
+
+script_parser_fetch_err:
+	pr_notice("=========script_parser_fetch_err============\n");
+	return ret;
+}
+
 static int __init gsl_ts_init(void)
 {
 	int ret = -1;
 	dprintk(DEBUG_INIT,"****************************************************************\n");
 	
-	if (input_fetch_sysconfig_para(&(config_info.input_type))) {
+	if (ctp_fetch_sysconfig_para()) {
 		printk("%s: ctp_fetch_sysconfig_para err.\n", __func__);
 		return 0;
-	} else {
-		ret = input_init_platform_resource(&(config_info.input_type));
-		if (0 != ret) {
-			printk("%s:ctp_ops.init_platform_resource err. \n", __func__);    
-		}
-	}
-	
-        if(config_info.ctp_used == 0){
-	        printk("*** ctp_used set to 0 !\n");
-	        printk("*** if use ctp,please put the sys_config.fex ctp_used set to 1. \n");
-	        return 0;
-	}
+	}	
+
 	if(!ctp_get_system_config()){
                 printk("%s:read config fail!\n",__func__);
                 return ret;
         }
         
-	ctp_wakeup(config_info.wakeup_number, 0, 10);
 	gsl_ts_driver.detect = ctp_detect;
 	ret = i2c_add_driver(&gsl_ts_driver);
 	dprintk(DEBUG_INIT,"****************************************************************\n");
@@ -1093,8 +1290,8 @@ static int __init gsl_ts_init(void)
 static void __exit gsl_ts_exit(void)
 {
 	printk("==gsl_ts_exit==\n");
+	if( gsl_ts_driver.detect )
 	i2c_del_driver(&gsl_ts_driver);
-	input_free_platform_resource(&(config_info.input_type));
 	return;
 }
 
