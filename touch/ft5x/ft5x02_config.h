@@ -19,7 +19,7 @@
 #define FT5X02_POINTS_SUPPORTED			5
 #define FT5X02_THGROUP			        120
 #define FT5X02_THPEAK			        60
-#define FT5X02_THDIFF			        2560
+#define FT5X02_THDIFF			        60
 #define FT5X02_MAX_TOUCH_VALUE			1200
 #define FT5X02_DRAW_LINE_TH			250
 #define FT5X02_PWMODE_CTRL			1

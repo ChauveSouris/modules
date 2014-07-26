@@ -122,7 +122,7 @@ static struct ctp_config_info config_info = {
 	.input_type = CTP_TYPE,
 };
 
-static u32 debug_mask = 0xffffffff;
+static u32 debug_mask = 0;
 #define dprintk(level_mask,fmt,arg...)    if(unlikely(debug_mask & level_mask)) \
         printk("[CTP]:"fmt, ## arg)
 module_param_named(debug_mask,debug_mask,int,S_IRUGO | S_IWUSR | S_IWGRP);
@@ -1257,6 +1257,7 @@ static void ft5x_lighting(void)
 }
 #endif
 
+#ifdef CONFIG_FT5X0X_MULTITOUCH
 static void ft5x_report_multitouch(void)
 {
 	struct ft5x_ts_data *data = i2c_get_clientdata(this_client);
@@ -1318,6 +1319,7 @@ static void ft5x_report_multitouch(void)
 	input_sync(data->input_dev);
 	return;
 }
+#endif
 
 #ifndef CONFIG_FT5X0X_MULTITOUCH
 static void ft5x_report_singletouch(void)
