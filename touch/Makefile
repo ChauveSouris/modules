@@ -1,2 +1,2 @@
-obj-m  += gslX680.o
 
+obj-m += gsl/
