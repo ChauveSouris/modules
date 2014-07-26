@@ -7,8 +7,8 @@
 #define FT5X02_OTP_PARAM_ID			0
 #define FT5X02_CUSTOMER_ID			121
 #define FT5X02_CHIPER_ID			2
-#define FT5X02_RESOLUTION_X			480
-#define FT5X02_RESOLUTION_Y			800
+#define FT5X02_RESOLUTION_X			578
+#define FT5X02_RESOLUTION_Y			932
 #define FT5X02_LEMDA_X			        42
 #define FT5X02_LEMDA_Y			        40
 #define FT5X02_KX			        196

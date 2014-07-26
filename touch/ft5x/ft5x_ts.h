@@ -2,7 +2,7 @@
 #define __LINUX_FT5X_TS_H__
 
 // gpio base address
-#define CONFIG_FT5X0X_MULTITOUCH     (1)
+//#define CONFIG_FT5X0X_MULTITOUCH     (1)
 #define CALIBRATION  (1)
 #define UPGRADE   (5)
 //#define CALIBRATION _IO(CALIBRATION_FLAG,0)
@@ -46,7 +46,13 @@ enum ft5x_ts_regs {
 #define FT5X06_UPGRADE_ID_1			0x79
 #define FT5X06_UPGRADE_ID_2			0x03
 #define FT5X06_UPGRADE_READID_DELAY 	1
-
+/*upgrade config of FT5316*/
+#define FT5316_UPGRADE_AA_DELAY                50
+#define FT5316_UPGRADE_55_DELAY                30
+#define FT5316_UPGRADE_ID_1                    0x79
+#define FT5316_UPGRADE_ID_2                    0x07
+#define FT5316_UPGRADE_READID_DELAY    1500
+#define FT5316_UPGRADE_EARSE_DELAY     1
 
 #ifndef ABS_MT_TOUCH_MAJOR
     #define ABS_MT_TOUCH_MAJOR	0x30	/* touching ellipse */

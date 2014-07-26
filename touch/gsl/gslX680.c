@@ -46,7 +46,7 @@
 #include <plat/sys_config.h>
 
 #include <mach/gpio.h>
-#include "init-input.h"
+#include "../init-input.h"
 
 #include "gslX680.h"
 #include "gsl1680.h"        //resolution:1024*600

@@ -1922,6 +1922,55 @@ ERR_EXIT:
 	return err;
 }
 
+// add by liaods, for pcduino
+int ft5x02_Init_IC_Param_pcd(struct i2c_client *client)
+{
+	int err = 0;
+	u16 val1, val2;
+
+	/*enter work mode*/
+	err = ft5x02_write_reg(client, FT5x02_REG_DEVICE_MODE, FT5x02_WORKMODE_VALUE);
+	if (err < 0) {
+		dev_err(&client->dev, "%s:enter work mode failed.\n", __func__);
+		goto ERR_EXIT;
+	}
+
+	ft5x02_get_Resolution(client, &val1, &val2);
+	printk("%s %d, res_x=%d, res_y=%d\n", __FUNCTION__, __LINE__, val1, val2);
+	
+	/*set resolution*/
+	err = ft5x02_set_Resolution(client, FT5X02_RESOLUTION_X, FT5X02_RESOLUTION_Y);
+	if (err < 0) {
+		dev_err(&client->dev, "%s:could not set resolution.\n",
+			__func__);
+		goto ERR_EXIT;
+	}
+
+	ft5x02_get_kx(client, &val1);
+	ft5x02_get_ky(client, &val2);
+	printk("%s %d, kx=%d, ky=%d\n", __FUNCTION__, __LINE__, val1, val2);
+
+	/*set kx*/
+	err = ft5x02_set_kx(client, FT5X02_KX);
+	if (err < 0) {
+		dev_err(&client->dev, "%s:could not set kx.\n",
+			__func__);
+		goto ERR_EXIT;
+	}
+	printk("%s %d\n", __FUNCTION__, __LINE__);
+	/*set ky*/
+	err = ft5x02_set_ky(client,FT5X02_KY);
+	if (err < 0) {
+		dev_err(&client->dev, "%s:could not set ky.\n",
+			__func__);
+		goto ERR_EXIT;
+	}
+
+
+ERR_EXIT:
+	return err;
+}
+
 
 char dst[512];
 static char * ft5x02_sub_str(char * src, int n)
